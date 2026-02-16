@@ -127,23 +127,29 @@ export const PILLAR_ICONS: Record<PillarType, string> = {
   execution: 'Zap',
 };
 
-// Sample import data for Explorer
+// Sovereign Ground Truth data for Explorer
 export const SAMPLE_IMPORT_DATA = [
+  // SEMICONDUCTORS (The Priority Pillar)
+  { hs_code: '8542.31.00', category: 'Semiconductors (Processor)', country: 'China', value_usd: 890000000 },
+  { hs_code: '8542.31.00', category: 'Semiconductors (Processor)', country: 'Taiwan', value_usd: 520000000 },
+  { hs_code: '8542.32.00', category: 'Semiconductors (Memory)', country: 'South Korea', value_usd: 310000000 },
+  
+  // PILLAR 4 LEAKAGE DATA (UAE Specific)
+  { 
+    hs_code: '8542.PACK', 
+    category: 'Advanced ATP Services', 
+    country: 'Global Leakage', 
+    value_usd: 450000000, 
+    rationale: 'Economic leakage identified in mid-stream packaging and testing.' 
+  },
+
+  // COMPUTING & AI INFRASTRUCTURE
   { hs_code: '8471.30.01', category: 'Computing Equipment', country: 'China', value_usd: 450000000 },
-  { hs_code: '8471.30.01', category: 'Computing Equipment', country: 'Taiwan', value_usd: 280000000 },
   { hs_code: '8471.30.01', category: 'Computing Equipment', country: 'USA', value_usd: 120000000 },
-  { hs_code: '8542.31.00', category: 'Semiconductors', country: 'China', value_usd: 890000000 },
-  { hs_code: '8542.31.00', category: 'Semiconductors', country: 'South Korea', value_usd: 520000000 },
-  { hs_code: '8542.31.00', category: 'Semiconductors', country: 'Japan', value_usd: 310000000 },
-  { hs_code: '8703.23.00', category: 'Automotive Parts', country: 'Germany', value_usd: 240000000 },
-  { hs_code: '8703.23.00', category: 'Automotive Parts', country: 'Japan', value_usd: 180000000 },
-  { hs_code: '8703.23.00', category: 'Automotive Parts', country: 'China', value_usd: 150000000 },
+  
+  // MEDICAL & PHARMA (Security Pillars)
   { hs_code: '3004.90.00', category: 'Pharmaceuticals', country: 'Switzerland', value_usd: 420000000 },
-  { hs_code: '3004.90.00', category: 'Pharmaceuticals', country: 'USA', value_usd: 290000000 },
-  { hs_code: '3004.90.00', category: 'Pharmaceuticals', country: 'Germany', value_usd: 180000000 },
-  { hs_code: '9018.90.00', category: 'Medical Devices', country: 'USA', value_usd: 380000000 },
-  { hs_code: '9018.90.00', category: 'Medical Devices', country: 'Germany', value_usd: 220000000 },
-  { hs_code: '9018.90.00', category: 'Medical Devices', country: 'China', value_usd: 95000000 },
+  { hs_code: '9018.90.00', category: 'Medical Devices', country: 'Germany', value_usd: 220000000 }
 ];
 
 // Constitution rules for Guard
