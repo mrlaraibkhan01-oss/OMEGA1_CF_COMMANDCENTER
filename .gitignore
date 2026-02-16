@@ -6,3 +6,10 @@ dist/
 .env.*.local
 .wrangler/
 *.log
+
+# backups
+*.bak
+*.bak_*
+*.broken_*.bak
+*.ts.bak_*
+*.tsx.bak_*
