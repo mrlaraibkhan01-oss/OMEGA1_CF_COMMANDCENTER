@@ -1,0 +1,58 @@
+/* Ubuntu War Room theme (scoped) */
+.warroom-ubuntu {
+  /* Ubuntu Server console aesthetic (CLI workspace, not GUI terminal theme) */
+  --bg-primary: #0b0b0b;
+  --bg-secondary: #0f0f0f;
+  --bg-tertiary: #121212;
+  --gold: #e95420;          /* Ubuntu accent */
+  --gold-soft: rgba(233, 84, 32, 0.14);
+  --text-primary: #f2f2f2;
+  --text-secondary: #cfcfcf;
+  --text-muted: rgba(242, 242, 242, 0.62);
+  --border: rgba(255, 255, 255, 0.12);
+
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.warroom-ubuntu .glass-panel {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.warroom-ubuntu h1,
+.warroom-ubuntu h2,
+.warroom-ubuntu h3,
+.warroom-ubuntu h4 {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.warroom-ubuntu .btn-primary,
+.warroom-ubuntu .btn-secondary {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.warroom-ubuntu .btn-primary {
+  background: var(--gold) !important;
+  color: #0b0b0b !important;
+}
+
+.warroom-ubuntu .btn-secondary {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.warroom-ubuntu .terminal-scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0.12) 0px,
+    rgba(0,0,0,0.12) 1px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0) 4px
+  );
+}

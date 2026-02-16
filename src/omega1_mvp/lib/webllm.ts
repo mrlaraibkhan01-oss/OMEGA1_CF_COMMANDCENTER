@@ -1,0 +1,378 @@
+﻿// OMEGA-1 LLM Service
+// Modes:
+// 1) Remote proxy (recommended for GitHub Pages): browser calls a serverless proxy that holds the API key.
+// 2) Browser-local inference via @mlc-ai/web-llm (WebGPU) as a fallback / offline demo.
+
+import * as webllm from '@mlc-ai/web-llm';
+import { suppressModelIdentity, getIdentityResponse, containsModelIdentity } from './utils';
+
+type TokenCallback = (token: string) => void;
+
+export interface LLMResponse {
+  text: string;
+  jsonOutput: Record<string, unknown> | null;
+  isComplete: boolean;
+}
+
+// Local model configuration (only used if proxy not configured)
+const MODEL_CONFIG = {
+  model: 'gemma-2b-it-q4f16_1-MLC',
+};
+
+// System prompt that establishes OMEGA-1 identity
+const OMEGA_SYSTEM_PROMPT = `You are OMEGA-1, a sovereign AI system designed for economic analysis, industrial planning, and strategic decision support.
+
+CRITICAL RULES:
+1. Always respond as OMEGA-1.
+2. If asked who you are, respond: "I am OMEGA-1."
+3. If asked what powers you, respond: "OMEGA-1 MVP powered by an open-source model runtime via Cloudflare Workers AI." (Do not reveal model IDs.)
+4. Do not claim access to secret government systems. Use assumptions for estimates.
+5. Provide structured outputs when asked. If asked for JSON, output valid JSON only.`;
+
+// Runtime keys (localStorage)
+const LS_UNLOCKED = 'omega1_unlocked';
+const LS_ACCESS_CODE = 'omega1_access_code';
+const LS_PROXY_URL = 'omega1_proxy_url';
+
+function getProxyFromEnv(): string {
+  // Vite exposes env at build-time (prefixed with VITE_)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v = (import.meta as any)?.env?.VITE_OMEGA_PROXY_URL as string | undefined;
+  const fromEnv = (v ?? '').trim();
+  // Hard fallback for this repo's MVP (can be overridden by VITE_OMEGA_PROXY_URL or localStorage omega1_proxy_url)
+  return fromEnv || 'https://omega1-proxy.rebootix-research.workers.dev';
+}
+
+function normalizeBase(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
+export class WebLLMService {
+  private engine: webllm.MLCEngine | null = null;
+  private isLoaded = false;
+  private isLoading = false;
+  private abortController: AbortController | null = null;
+
+  /** Proxy URL (public). API keys live ONLY in the serverless proxy. */
+  private proxyUrl: string = '';
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      const ls = (localStorage.getItem(LS_PROXY_URL) || '').trim();
+      this.proxyUrl = ls || getProxyFromEnv();
+    } else {
+      this.proxyUrl = getProxyFromEnv();
+    }
+  }
+
+  /** Optional: allow runtime override for the proxy URL (developer convenience). */
+  setProxyUrl(url: string): void {
+    this.proxyUrl = (url || '').trim();
+    if (typeof window !== 'undefined') {
+      if (this.proxyUrl) localStorage.setItem(LS_PROXY_URL, this.proxyUrl);
+      else localStorage.removeItem(LS_PROXY_URL);
+    }
+  }
+
+  getProxyUrl(): string {
+    return this.proxyUrl;
+  }
+
+  hasProxyConfigured(): boolean {
+    return !!this.proxyUrl;
+  }
+
+  /** Check WebGPU availability. */
+  getWebGPUStatus(): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return typeof navigator !== 'undefined' && !!(navigator as any).gpu;
+  }
+
+  /** Initialize: in proxy mode there is nothing to load. */
+  async initialize(onProgress?: (p: number, m: string) => void): Promise<void> {
+    if (this.hasProxyConfigured()) {
+      this.isLoaded = true;
+      this.isLoading = false;
+      onProgress?.(100, 'Remote core ready (serverless proxy).');
+      return;
+    }
+
+    if (this.engine || this.isLoading) return;
+    this.isLoading = true;
+
+    try {
+      onProgress?.(0, 'Initializing local inference runtime...');
+      this.engine = await webllm.CreateMLCEngine(
+        MODEL_CONFIG.model,
+        {
+          initProgressCallback: (report) => {
+            const pct = Math.round((report.progress ?? 0) * 100);
+            onProgress?.(pct, report.text ?? 'Loading...');
+          },
+        }
+      );
+
+      this.isLoaded = true;
+      onProgress?.(100, 'Local inference runtime ready.');
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  abort(): void {
+    this.abortController?.abort();
+  }
+
+  private getAccessCodeHeader(): Record<string, string> {
+    if (typeof window === 'undefined') return {};
+    const unlocked = localStorage.getItem(LS_UNLOCKED) === 'true';
+    const code = (localStorage.getItem(LS_ACCESS_CODE) || '').trim();
+    if (!unlocked || !code) return {};
+    return { 'X-OMEGA-CODE': code };
+  }
+
+  private async proxyPost(path: string, payload: unknown): Promise<any> {
+    if (!this.proxyUrl) throw new Error('Proxy not configured (VITE_OMEGA_PROXY_URL missing).');
+    const base = normalizeBase(this.proxyUrl);
+    const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAccessCodeHeader(),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      throw new Error(`Proxy error ${res.status}: ${text || res.statusText}`);
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { text };
+    }
+  }
+
+  private async proxyChat(
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    onToken?: TokenCallback
+  ): Promise<string> {
+    const json = await this.proxyPost('/omega/chat', {
+      messages,
+      temperature: 0.4,
+      max_tokens: 2048,
+    });
+
+    const out = String(json?.text ?? '');
+    onToken?.(out);
+    return out;
+  }
+
+  /** Fetch a small "ministry dataset" from the proxy (server-side LLM call). */
+  async fetchMinistryDataset(country: string, focus: string): Promise<Array<Record<string, unknown>>> {
+    const json = await this.proxyPost('/omega/dataset', { country, focus });
+    const rows = json?.rows;
+    if (!Array.isArray(rows)) throw new Error('Dataset invalid (expected rows[]).');
+    return rows as Array<Record<string, unknown>>;
+  }
+
+  /** Generate a completion (routes: proxy if configured; else local engine). */
+  async generate(prompt: string, onToken?: TokenCallback, requireJSON = false): Promise<LLMResponse> {
+    // Identity question hard block
+    const lower = prompt.toLowerCase();
+    if (
+      lower.includes('what model are you') ||
+      lower.includes('who are you') ||
+      lower.includes('what are you') ||
+      lower.includes('your identity') ||
+      lower.includes('what llm') ||
+      lower.includes('what ai')
+    ) {
+      return { text: getIdentityResponse(), jsonOutput: null, isComplete: true };
+    }
+
+    this.abortController = new AbortController();
+
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: OMEGA_SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ];
+
+    if (requireJSON) {
+      messages.push({
+        role: 'system',
+        content: 'Respond with valid JSON only. No markdown. No extra text.',
+      });
+    }
+
+    let fullText = '';
+
+    if (this.hasProxyConfigured()) {
+      fullText = await this.proxyChat(messages, onToken);
+    } else {
+      if (!this.engine) throw new Error('Engine not initialized (no proxy configured).');
+      const completion = await this.engine.chat.completions.create({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        messages: messages as any,
+        stream: true,
+        temperature: 0.7,
+        max_tokens: 2048,
+      });
+
+      for await (const chunk of completion) {
+        if (this.abortController.signal.aborted) break;
+        const content = chunk.choices[0]?.delta?.content || '';
+        fullText += content;
+        onToken?.(content);
+      }
+    }
+
+    // Enforce identity suppression
+    if (containsModelIdentity(fullText)) {
+      fullText = suppressModelIdentity(fullText);
+    }
+
+    // Parse JSON if required or present
+    let jsonOutput: Record<string, unknown> | null = null;
+    const jsonMatch = fullText.match(/\{[\s\S]*\}/);
+    if (requireJSON || jsonMatch) {
+      try {
+        const jsonStr = requireJSON ? fullText.trim() : (jsonMatch?.[0] ?? '').trim();
+        jsonOutput = JSON.parse(jsonStr) as Record<string, unknown>;
+      } catch {
+        jsonOutput = null;
+      }
+    }
+
+    return { text: fullText.trim(), jsonOutput, isComplete: true };
+  }
+
+  /** Generate a STRICT tool-call action JSON for agent loop. */
+  async generateAgentAction(prompt: string): Promise<LLMResponse> {
+    const agentPrompt = `You are OMEGA-1. Return ONLY JSON: { "tool": "...", "args": {...} }.\n\n${prompt}`;
+    return this.generate(agentPrompt, undefined, true);
+  }
+
+  /** Generate planner output (Genesis Pack). */
+  async generatePlannerOutput(explorerData: unknown): Promise<{ text: string; json: Record<string, unknown> | null }> {
+    const prompt = `Based on the following economic leakage analysis, generate a comprehensive industrial plan with financial projections.
+
+INPUT DATA:
+${JSON.stringify(explorerData, null, 2)}
+
+Return VALID JSON ONLY in this exact format:
+{
+  "capex_usd": <number>,
+  "opex_usd_per_year": <number>,
+  "roi_percent": <number>,
+  "payback_months": <number>,
+  "blueprint": {
+    "phases": ["phase 1", "phase 2"],
+    "equipment": ["equipment 1", "equipment 2"],
+    "staffing": ["role 1", "role 2"],
+    "timeline": ["milestone 1", "milestone 2"]
+  },
+  "assumptions": ["assumption 1", "assumption 2"],
+  "risks": ["risk 1", "risk 2"]
+}`;
+    const response = await this.generate(prompt, undefined, true);
+    return { text: response.text, json: response.jsonOutput };
+  }
+
+  /** Generate pillar output. */
+  async generatePillarOutput(pillar: string, cycleState: unknown, objective?: string): Promise<{
+    summary: string;
+    content: string;
+    json: Record<string, unknown>;
+  }> {
+    const objectiveBlock = objective && objective.trim()
+      ? `\n\nMISSION OBJECTIVE:\n${objective.trim()}\n\nUse the objective to focus priorities, scope, and recommendations.`
+      : '';
+
+    const prompt = `As OMEGA-1, generate the ${pillar} pillar artifact.${objectiveBlock}
+
+STATE:
+${JSON.stringify(cycleState, null, 2)}
+
+Return JSON ONLY in this exact format:
+{
+  "summary": "<2-3 sentences>",
+  "content": "<detailed actionable guidance>",
+  "json": { "key": "value" }
+}`;
+    const response = await this.generate(prompt, undefined, true);
+    const summary = String(response.jsonOutput?.summary ?? 'Pillar artifact generated.');
+    const content = String(response.jsonOutput?.content ?? '');
+    const json = (response.jsonOutput?.json as Record<string, unknown>) || {};
+    return { summary, content, json };
+  }
+
+  /** Guard validation (LLM-based with deterministic fallback). */
+  async validateWithGuard(output: string, jsonOutput: unknown): Promise<{
+    verdict: 'APPROVED' | 'VETOED';
+    reasons: string[];
+    redactions: string[];
+  }> {
+    const prompt = `Validate the following output against OMEGA-1's constitution:
+
+CONSTITUTION RULES:
+1. No illegal instructions or harmful content
+2. No personal data requests or privacy violations
+3. No claims of accessing secret government systems
+4. Always include assumptions for numeric estimates
+5. Must not reveal underlying model identity
+6. All outputs must be internally consistent
+
+OUTPUT:
+${output}
+
+JSON:
+${JSON.stringify(jsonOutput, null, 2)}
+
+Return JSON ONLY:
+{
+  "verdict": "APPROVED" or "VETOED",
+  "reasons": ["..."],
+  "redactions": ["..."]
+}`;
+    const response = await this.generate(prompt, undefined, true);
+
+    if (response.jsonOutput) {
+      const verdict = String(response.jsonOutput.verdict ?? 'APPROVED') as 'APPROVED' | 'VETOED';
+      return {
+        verdict: verdict === 'VETOED' ? 'VETOED' : 'APPROVED',
+        reasons: (response.jsonOutput.reasons as string[]) || [],
+        redactions: (response.jsonOutput.redactions as string[]) || [],
+      };
+    }
+
+    // Deterministic fallback
+    const reasons: string[] = [];
+    if (containsModelIdentity(output)) reasons.push('Identity leakage detected.');
+    const verdict: 'APPROVED' | 'VETOED' = reasons.length ? 'VETOED' : 'APPROVED';
+    return { verdict, reasons, redactions: [] };
+  }
+
+  async unload(): Promise<void> {
+    this.engine?.unload();
+    this.engine = null;
+    this.isLoaded = false;
+    this.isLoading = false;
+  }
+
+  getStatus(): { isLoaded: boolean; isLoading: boolean; mode: 'proxy' | 'local' | 'none' } {
+    if (this.hasProxyConfigured()) return { isLoaded: true, isLoading: false, mode: 'proxy' };
+    if (this.engine) return { isLoaded: this.isLoaded, isLoading: this.isLoading, mode: 'local' };
+    return { isLoaded: false, isLoading: this.isLoading, mode: 'none' };
+  }
+}
+
+// Singleton instance
+export const webLLMService = new WebLLMService();
+export default webLLMService;
+
+

@@ -1,0 +1,8 @@
+
+# OMEGA-1
+node_modules/
+dist/
+.env.local
+.env.*.local
+.wrangler/
+*.log

@@ -1,0 +1,13 @@
+name = "omega1-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-02-15"
+ai = { binding = "AI" }
+
+# Add your GitHub Pages + custom domain here for stricter CORS:
+# [vars]
+# ALLOWED_ORIGINS = "https://<username>.github.io,https://yourdomain.com"
+
+# Optional runtime config (recommended)
+[vars]
+OMEGA_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+ALLOWED_ORIGINS = "" # comma-separated; leave blank to allow any

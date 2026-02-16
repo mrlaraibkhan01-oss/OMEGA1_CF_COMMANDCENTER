@@ -1,0 +1,546 @@
+﻿// OMEGA-1 State Management Hook
+
+import { useState, useCallback, useRef, useEffect } from 'react';
+import type {
+  BrainState,
+  ThreeBrains,
+  CycleStage,
+  AuditEvent,
+  PillarOutput,
+  LeakData,
+  ExplorerOutput,
+  PlannerOutput,
+  GuardVerdict,
+  PillarType,
+} from '../types';
+import { SAMPLE_IMPORT_DATA } from '../types';
+import { generateAuditHash, validateAuditChain, generateId, sleep } from '../lib/utils';
+import webLLMService from '../lib/webllm';
+
+// Initial brain states
+const initialBrains: ThreeBrains = {
+  explorer: { status: 'idle', output: '', jsonOutput: null, timestamp: null },
+  planner: { status: 'idle', output: '', jsonOutput: null, timestamp: null },
+  guard: { status: 'idle', output: '', jsonOutput: null, timestamp: null },
+};
+
+export interface OmegaState {
+  // Password gate
+  isUnlocked: boolean;
+  unlock: (password: string) => boolean;
+  
+  // Model state
+  isModelLoaded: boolean;
+  isModelLoading: boolean;
+  modelProgress: number;
+  modelMessage: string;
+  loadModel: () => Promise<void>;
+  hasWebGPU: boolean;
+  
+  // Cycle state
+  cycleStage: CycleStage;
+  isCycleRunning: boolean;
+  cycleProgress: number;
+  runCycle: () => Promise<void>;
+  
+  // Brains
+  brains: ThreeBrains;
+  
+  // Audit
+  auditEvents: AuditEvent[];
+  auditHeadHash: string;
+  validateAudit: () => Promise<{ isValid: boolean; brokenAt: number | null }>;
+  appendAuditEvent: (stage: CycleStage, event: string, payload: Record<string, unknown>) => Promise<AuditEvent>;
+
+  // Granular tools (agent mode)
+  runExplorerTool: () => Promise<ExplorerOutput>;
+  runPlannerTool: (explorerData: ExplorerOutput) => Promise<PlannerOutput | null>;
+  runGuardTool: (plannerOutput: string, plannerJson: unknown) => Promise<GuardVerdict>;
+  
+  // Pillars
+  pillarOutputs: Record<PillarType, PillarOutput | null>;
+  generatePillar: (pillar: PillarType, objective?: string) => Promise<PillarOutput | null>;
+  
+  // Actions
+  reset: () => void;
+  uploadData: (data: Array<Record<string, string>>) => void;
+  importData: LeakData[];
+}
+
+const PASSWORD = 'omega-99';
+const MAX_RETRIES = 2;
+
+export function useOmegaState(): OmegaState {
+  // Password gate
+  const [isUnlocked, setIsUnlocked] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('omega1_unlocked') === 'true';
+  });
+
+  // Model state
+  const [isModelLoaded, setIsModelLoaded] = useState(() => webLLMService.getStatus().mode === 'proxy');
+  const [isModelLoading, setIsModelLoading] = useState(false);
+  const [modelProgress, setModelProgress] = useState(0);
+  const [modelMessage, setModelMessage] = useState(() => webLLMService.getStatus().mode === 'proxy' ? 'Remote core ready (serverless proxy).' : '');
+  const [hasWebGPU, setHasWebGPU] = useState(false);
+
+  // Cycle state
+  const [cycleStage, setCycleStage] = useState<CycleStage>('INGEST');
+  const [isCycleRunning, setIsCycleRunning] = useState(false);
+  const [cycleProgress, setCycleProgress] = useState(0);
+
+  // Brains
+  const [brains, setBrains] = useState<ThreeBrains>(initialBrains);
+
+  // Audit
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditHeadHash, setAuditHeadHash] = useState('0'.repeat(64));
+
+  // Pillar outputs
+  const [pillarOutputs, setPillarOutputs] = useState<Record<PillarType, PillarOutput | null>>({
+    capital_markets: null,
+    macroeconomics: null,
+    business_genesis: null,
+    government: null,
+    instruments: null,
+    wealth: null,
+    execution: null,
+  });
+
+  // Import data (for Explorer)
+  const [importData, setImportData] = useState<LeakData[]>([]);
+
+  // Refs for cycle control
+  const abortRef = useRef(false);
+
+  // Check WebGPU on mount
+  useEffect(() => {
+    setHasWebGPU(webLLMService.getWebGPUStatus());
+  }, []);
+
+  // Unlock function
+  const unlock = useCallback((password: string): boolean => {
+    if (password === PASSWORD) {
+      setIsUnlocked(true);
+      localStorage.setItem('omega1_unlocked', 'true');
+      localStorage.setItem('omega1_access_code','omega-99');
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Load model
+  const loadModel = useCallback(async () => {
+    if (isModelLoaded || isModelLoading) return;
+
+    setIsModelLoading(true);
+    setModelProgress(0);
+    setModelMessage('Initializing...');
+
+    const isProxy = webLLMService.getStatus().mode === 'proxy';
+
+    try {
+      await webLLMService.initialize((progress, message) => {
+        if (isProxy) {
+          setModelProgress(100);
+          setModelMessage('Remote core ready (serverless proxy).');
+          return;
+        }
+        setModelProgress(progress);
+        // Never surface runtime/model identifiers in the UI.
+        // Map raw loader messages to generic, brand-safe status.
+        if (progress < 15) setModelMessage('Initializing local inference runtime...');
+        else if (progress < 60) setModelMessage('Downloading inference assets...');
+        else if (progress < 90) setModelMessage('Compiling WebGPU kernels...');
+        else if (progress < 100) setModelMessage('Finalizing...');
+        else setModelMessage('Local inference runtime ready.');
+      });
+      setIsModelLoaded(true);
+    } catch (error) {
+      console.error('Failed to load model:', error);
+      setModelMessage('Failed to load model. Please refresh and try again.');
+    } finally {
+      setIsModelLoading(false);
+    }
+  }, [isModelLoaded, isModelLoading]);
+
+  // Add audit event
+  const addAuditEvent = useCallback(async (
+    stage: CycleStage,
+    event: string,
+    payload: Record<string, unknown>
+  ): Promise<AuditEvent> => {
+    const timestamp = Date.now();
+    const prevHash = auditHeadHash;
+    const hash = await generateAuditHash(prevHash, timestamp, stage, payload);
+
+    const newEvent: AuditEvent = {
+      id: generateId(),
+      timestamp,
+      stage,
+      event,
+      payload,
+      prevHash,
+      hash,
+    };
+
+    setAuditEvents(prev => [...prev, newEvent]);
+    setAuditHeadHash(hash);
+
+    return newEvent;
+  }, [auditHeadHash]);
+
+  // Explorer computation (non-LLM)
+  const runExplorer = useCallback(async (): Promise<ExplorerOutput> => {
+    setBrains(prev => ({
+      ...prev,
+      explorer: { ...prev.explorer, status: 'running' },
+    }));
+
+    // Use sample data if no upload
+    const data = importData.length > 0 ? importData : SAMPLE_IMPORT_DATA.map(d => ({
+      hs_code: d.hs_code,
+      category: d.category,
+      country: d.country,
+      value_usd: d.value_usd,
+      score: 0,
+      rationale: '',
+    }));
+
+    // Aggregate by category
+    const categoryMap = new Map<string, { total: number; countries: Set<string> }>();
+    data.forEach(item => {
+      const existing = categoryMap.get(item.category);
+      if (existing) {
+        existing.total += item.value_usd;
+        existing.countries.add(item.country);
+      } else {
+        categoryMap.set(item.category, {
+          total: item.value_usd,
+          countries: new Set([item.country]),
+        });
+      }
+    });
+
+    // Calculate total value
+    const totalValue = data.reduce((sum, item) => sum + item.value_usd, 0);
+
+    // Calculate dependency scores
+    const leaks: LeakData[] = [];
+    categoryMap.forEach((value, category) => {
+      // Find representative HS code
+      const rep = data.find(d => d.category === category);
+      if (rep) {
+        const countryConcentration = value.countries.size <= 2 ? 0.8 : value.countries.size <= 4 ? 0.5 : 0.3;
+        const score = Math.min((value.total / totalValue) * 100 + countryConcentration * 30, 100);
+        
+        leaks.push({
+          hs_code: rep.hs_code,
+          category,
+          country: Array.from(value.countries).join(', '),
+          value_usd: value.total,
+          score: Math.round(score * 100) / 100,
+          rationale: `High import value ($${(value.total / 1e6).toFixed(1)}M) from ${value.countries.size} countries`,
+        });
+      }
+    });
+
+    // Sort by score descending
+    leaks.sort((a, b) => b.score - a.score);
+
+    const output: ExplorerOutput = {
+      leaks: leaks.slice(0, 5),
+      totals: {
+        total_value_usd: totalValue,
+        category_count: categoryMap.size,
+        country_count: new Set(data.map(d => d.country)).size,
+      },
+      method: 'Dependency concentration analysis with trade value weighting',
+    };
+
+    // Update brain state
+    setBrains(prev => ({
+      ...prev,
+      explorer: {
+        status: 'complete',
+        output: `Identified ${output.leaks.length} critical leakage categories. Top risk: ${output.leaks[0]?.category} with score ${output.leaks[0]?.score}.`,
+        jsonOutput: output,
+        timestamp: Date.now(),
+      },
+    }));
+
+    await addAuditEvent('LEAK_DETECT', 'explorer_complete', { leakCount: output.leaks.length });
+
+    return output;
+  }, [importData, addAuditEvent]);
+
+  // Planner (LLM-driven)
+  const runPlanner = useCallback(async (explorerData: ExplorerOutput): Promise<PlannerOutput | null> => {
+    setBrains(prev => ({
+      ...prev,
+      planner: { ...prev.planner, status: 'running' },
+    }));
+
+    try {
+      const response = await webLLMService.generatePlannerOutput(explorerData);
+
+      const json = response.json as PlannerOutput | null;
+      
+      setBrains(prev => ({
+        ...prev,
+        planner: {
+          status: 'complete',
+          output: response.text,
+          jsonOutput: json,
+          timestamp: Date.now(),
+        },
+      }));
+
+      await addAuditEvent('PLAN', 'planner_complete', { 
+        hasOutput: !!json,
+        capex: json?.capex_usd,
+      });
+
+      return json;
+    } catch (error) {
+      console.error('Planner error:', error);
+      setBrains(prev => ({
+        ...prev,
+        planner: {
+          status: 'veto',
+          output: 'Error generating plan',
+          jsonOutput: null,
+          timestamp: Date.now(),
+        },
+      }));
+      return null;
+    }
+  }, [addAuditEvent]);
+
+  // Guard (validation)
+  const runGuard = useCallback(async (
+    plannerOutput: string,
+    plannerJson: unknown
+  ): Promise<GuardVerdict> => {
+    setBrains(prev => ({
+      ...prev,
+      guard: { ...prev.guard, status: 'running' },
+    }));
+
+    const validation = await webLLMService.validateWithGuard(plannerOutput, plannerJson);
+
+    const verdict: GuardVerdict = {
+      verdict: validation.verdict,
+      reasons: validation.reasons,
+      redactions: validation.redactions,
+      retryCount: 0,
+    };
+
+    setBrains(prev => ({
+      ...prev,
+      guard: {
+        status: validation.verdict === 'APPROVED' ? 'complete' : 'veto',
+        output: `Verdict: ${validation.verdict}. ${validation.reasons.join('; ') || 'No issues detected.'}`,
+        jsonOutput: verdict,
+        timestamp: Date.now(),
+      },
+    }));
+
+    await addAuditEvent('GUARD_CHECK', 'guard_complete', {
+      verdict: validation.verdict,
+      reasonCount: validation.reasons.length,
+    });
+
+    return verdict;
+  }, [addAuditEvent]);
+
+  // Full cycle
+  const runCycle = useCallback(async () => {
+    if (isCycleRunning || !isModelLoaded) return;
+
+    setIsCycleRunning(true);
+    abortRef.current = false;
+
+    try {
+      // INGEST
+      setCycleStage('INGEST');
+      setCycleProgress(10);
+      await addAuditEvent('INGEST', 'cycle_start', { timestamp: Date.now() });
+      await sleep(500);
+
+      // LEAK_DETECT (Explorer)
+      setCycleStage('LEAK_DETECT');
+      setCycleProgress(25);
+      const explorerData = await runExplorer();
+      if (abortRef.current) return;
+
+      // PLAN (Planner)
+      setCycleStage('PLAN');
+      setCycleProgress(50);
+      const plannerData = await runPlanner(explorerData);
+      if (abortRef.current) return;
+
+      if (!plannerData) {
+        setIsCycleRunning(false);
+        return;
+      }
+
+      // GUARD_CHECK
+      setCycleStage('GUARD_CHECK');
+      setCycleProgress(75);
+      const guardResult = await runGuard(
+        JSON.stringify(plannerData),
+        plannerData
+      );
+      if (abortRef.current) return;
+
+      // Handle veto with retry
+      if (guardResult.verdict === 'VETOED') {
+        let retries = 0;
+        while (guardResult.verdict === 'VETOED' && retries < MAX_RETRIES) {
+          retries++;
+          setBrains(prev => ({
+            ...prev,
+            guard: { ...prev.guard, status: 'running' },
+          }));
+          
+          // Retry planner
+          const retryData = await runPlanner(explorerData);
+          if (retryData) {
+            const retryGuard = await runGuard(JSON.stringify(retryData), retryData);
+            guardResult.verdict = retryGuard.verdict;
+            guardResult.reasons = retryGuard.reasons;
+          }
+        }
+        guardResult.retryCount = retries;
+      }
+
+      // PUBLISH
+      setCycleStage('PUBLISH');
+      setCycleProgress(90);
+      await addAuditEvent('PUBLISH', 'output_published', {
+        approved: guardResult.verdict === 'APPROVED',
+        retries: guardResult.retryCount,
+      });
+      await sleep(300);
+
+      // AUDIT_APPEND
+      setCycleStage('AUDIT_APPEND');
+      setCycleProgress(100);
+      await addAuditEvent('AUDIT_APPEND', 'cycle_complete', {
+        headHash: auditHeadHash,
+      });
+
+    } catch (error) {
+      console.error('Cycle error:', error);
+    } finally {
+      setIsCycleRunning(false);
+      setCycleStage('INGEST');
+      setCycleProgress(0);
+    }
+  }, [isCycleRunning, isModelLoaded, runExplorer, runPlanner, runGuard, addAuditEvent, auditHeadHash]);
+
+  // Validate audit chain
+  const validateAudit = useCallback(async () => {
+    return validateAuditChain(auditEvents);
+  }, [auditEvents]);
+
+  // Generate pillar output
+  const generatePillar = useCallback(async (pillar: PillarType, objective?: string): Promise<PillarOutput | null> => {
+    if (!isModelLoaded) return;
+
+    const cycleState = {
+      explorer: brains.explorer.jsonOutput,
+      planner: brains.planner.jsonOutput,
+      guard: brains.guard.jsonOutput,
+    };
+
+    try {
+      const result = await webLLMService.generatePillarOutput(pillar, cycleState, objective);
+
+      const output: PillarOutput = {
+        pillar,
+        summary: result.summary,
+        content: result.content,
+        jsonOutput: result.json,
+        timestamp: Date.now(),
+      };
+
+      setPillarOutputs(prev => ({
+        ...prev,
+        [pillar]: output,
+      }));
+
+      await addAuditEvent('PUBLISH', `pillar_${pillar}`, { hasOutput: true });
+          return output;
+    } catch (error) {
+      console.error(`Pillar ${pillar} error:`, error);
+          return null;
+    }
+  }, [isModelLoaded, brains, addAuditEvent]);
+
+  // Upload data
+  const uploadData = useCallback((data: Array<Record<string, string>>) => {
+    const parsed: LeakData[] = data.map(row => ({
+      hs_code: row.hs_code || '',
+      category: row.category || '',
+      country: row.country || '',
+      value_usd: parseFloat(row.value_usd) || 0,
+      score: 0,
+      rationale: '',
+    })).filter(d => d.hs_code && d.category);
+
+    setImportData(parsed);
+  }, []);
+
+  // Reset
+  const reset = useCallback(() => {
+    setBrains(initialBrains);
+    setAuditEvents([]);
+    setAuditHeadHash('0'.repeat(64));
+    setPillarOutputs({
+      capital_markets: null,
+      macroeconomics: null,
+      business_genesis: null,
+      government: null,
+      instruments: null,
+      wealth: null,
+      execution: null,
+    });
+    setImportData([]);
+    setCycleStage('INGEST');
+    setCycleProgress(0);
+    abortRef.current = true;
+  }, []);
+
+  return {
+    isUnlocked,
+    unlock,
+    isModelLoaded,
+    isModelLoading,
+    modelProgress,
+    modelMessage,
+    loadModel,
+    hasWebGPU,
+    cycleStage,
+    isCycleRunning,
+    cycleProgress,
+    runCycle,
+    brains,
+    auditEvents,
+    auditHeadHash,
+    validateAudit,
+    appendAuditEvent: addAuditEvent,
+    runExplorerTool: runExplorer,
+    runPlannerTool: runPlanner,
+    runGuardTool: runGuard,
+    pillarOutputs,
+    generatePillar,
+    reset,
+    uploadData,
+    importData,
+  };
+}
+
+export default useOmegaState;
+
