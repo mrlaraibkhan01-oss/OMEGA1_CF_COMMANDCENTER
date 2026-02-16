@@ -331,8 +331,8 @@ export default function CommandCenter({ omega }: { omega: OmegaState }) {
     setInput('');
     push('user', msg);
     setBusy(true);
-
-    try {
+      runLoadingSequence();
+      try {
       const cmd = await interpretCommand(msg);
 
       // Always ensure remote URL is configured (fallback is compiled in).
@@ -609,6 +609,7 @@ export default function CommandCenter({ omega }: { omega: OmegaState }) {
     </div>
   );
 }
+
 
 
 

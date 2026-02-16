@@ -1,4 +1,4 @@
-// OMEGA-1 MVP Utilities
+﻿// OMEGA-1 MVP Utilities
 
 import { MODEL_KEYWORDS } from '../types';
 
@@ -256,3 +256,8 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
     timeoutId = setTimeout(() => fn(...args), delay);
   };
 }
+
+
+// OMEGA-1: hardwired edge proxy base (prod)
+export const OMEGA_PROXY_BASE = 'https://api.rebootix-research.com';
+
