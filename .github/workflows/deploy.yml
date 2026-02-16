@@ -27,16 +27,10 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install
-        run: npm ci --no-audit --no-fund
-        env:
-          NODE_ENV: development
-
       - name: Build
-        run: npm run build
         env:
-          NODE_ENV: development
           VITE_OMEGA_PROXY_URL: ${{ vars.VITE_OMEGA_PROXY_URL }}
+        run: npm ci && npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
