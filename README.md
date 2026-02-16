@@ -1,4 +1,4 @@
-# OMEGA-1 Old-Money Website + War Room MVP
+# OMEGA-1  Website + War Room MVP
 
 This repo is a **static** website (Vite + React) with an interactive **War Room** demo that simulates OMEGA-1’s 3 brains + 7 pillars.
 
