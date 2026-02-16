@@ -182,6 +182,29 @@ export default function CommandCenter({ omega }: { omega: OmegaState }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const LOADING_STEPS = [
+    "LINKING SOVEREIGN NODE...",
+    "SPINNING UP EXPLORER...",
+    "INGESTING TRADE DEPENDENCIES...",
+    "ACCESSING PILLAR 4: INDUSTRIAL BLUEPRINT...",
+    "ACCESSING PILLAR 6: CONSTITUTION + COMPLIANCE...",
+    "SEALING AUDIT HASH...",
+    "RENDERING 7-PILLAR PACK..."
+  ];
+
+  const [loadingLine, setLoadingLine] = useState("");
+
+  useEffect(() => {
+    if (!busy) { setLoadingLine(""); return; }
+    let i = 0;
+    setLoadingLine(LOADING_STEPS[0]);
+    const t = setInterval(() => {
+      i = (i + 1) % LOADING_STEPS.length;
+      setLoadingLine(LOADING_STEPS[i]);
+    }, 850);
+    return () => clearInterval(t);
+  }, [busy]);
+
   const [snapshot, setSnapshot] = useState<MissionSnapshot>({
     explorer: null,
     planner: null,
@@ -379,11 +402,21 @@ export default function CommandCenter({ omega }: { omega: OmegaState }) {
       <div className="lg:col-span-7">
         <div className="glass-panel rounded-2xl p-4">
           <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
+                  {busy && (
+        <div className="mt-2 mono text-[11px]" style={{ color: 'var(--text-muted)', marginBottom: '8px' }}>
+          {loadingLine} <span className="omega-blink">█</span>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
               <Terminal className="w-5 h-5" style={{ color: 'var(--gold)' }} />
               <div className="font-semibold">COMMAND CENTER</div>
             </div>
-<div className="flex items-center gap-2">
+      {busy && (
+        <div className="mt-2 mono text-[11px]" style={{ color: 'var(--text-muted)', marginBottom: '8px' }}>
+          {loadingLine} <span className="omega-blink">█</span>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
               <Cpu className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
               {remoteBadge}
             </div>
@@ -576,6 +609,7 @@ export default function CommandCenter({ omega }: { omega: OmegaState }) {
     </div>
   );
 }
+
 
 
 

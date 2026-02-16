@@ -56,3 +56,12 @@
     rgba(0,0,0,0) 4px
   );
 }
+
+/* OMEGA-1 terminal cursor blink */
+.omega-blink { 
+  display: inline-block; 
+  animation: omegaBlink 1s steps(2, start) infinite; 
+}
+@keyframes omegaBlink { 
+  to { visibility: hidden; } 
+}
